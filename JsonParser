@@ -1,0 +1,287 @@
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Stack;
+
+public class JsonParser 
+{
+    enum State
+    {
+        START, 
+        READING_DCITIONARY,
+        READ_DICTIONARY,
+        READING_LIST,
+        READ_LIST,
+        READING_KEY_STRING,
+        READING_VALUE_STRING,
+        EXPECTING_VALUE,
+        EXPECTING_COMMA_OR_CLOSING_SYMBOL,
+        READING_DIGIT,
+        READING_KEYWORD,
+        EXPECTING_COLON,
+        READ_KEYWORD
+    };
+    
+    class StateObject{
+        State state;
+        Object data;
+        public StateObject(State s, Object d)
+        {
+            state = s;
+            data = d;
+        }
+        public StateObject(State s)
+        {
+            this(s,null);
+        }
+    }
+    
+    StateObject parserState;
+    Stack<StateObject> stateStack ;
+    HashMap<String,Object> map;
+    StringBuilder keyword;
+    
+    public JsonParser()
+    {
+        parserState = new StateObject(State.START);
+        stateStack = new Stack<StateObject>();
+        stateStack.push(parserState);
+    }
+    
+    public void resetParser()
+    {
+    	stateStack.clear();
+    	stateStack.push(new StateObject(State.START));
+    }
+    
+    public Object parse(char c) throws Exception
+    {
+        if(!stateStack.isEmpty())
+            parserState = stateStack.peek();
+        //truncate or ignore all whitespace chars except when reading a map key or list element
+        if(Character.isWhitespace(c) && parserState.state != State.READING_KEY_STRING && parserState.state != State.READING_VALUE_STRING)
+            return null;
+        if(parserState.state == State.START || parserState.state == State.EXPECTING_VALUE)
+        {
+            if(c == '{')
+            {
+            	if(parserState.state == State.EXPECTING_VALUE)
+            		stateStack.pop();
+                map = new HashMap<String,Object>();
+                stateStack.push(new StateObject(State.READING_DCITIONARY,map));
+            }
+            else if(c == '[')
+            {
+            	if(parserState.state == State.EXPECTING_VALUE)
+            		stateStack.pop();
+                stateStack.push(new StateObject(State.READING_LIST,new ArrayList<Object>()));
+                stateStack.push(new StateObject(State.EXPECTING_VALUE));
+            }
+            else if(parserState.state == State.EXPECTING_VALUE)
+            {
+            	stateStack.pop();		//popping expectiong_value state
+                readValue(c);
+            }
+            else
+                throw new Exception("Invalid start of json object");
+        }
+        else if(parserState.state == State.READING_DIGIT)
+        {
+            return readDigit(c);
+        }
+        else if(parserState.state == State.READING_KEYWORD)
+        {
+            readKeyword(c);
+        }
+        else if(parserState.state == State.READING_DCITIONARY)
+        {
+            readDictionary(c);
+        }
+        else if(parserState.state == State.READING_KEY_STRING || parserState.state == State.READING_VALUE_STRING)
+        {
+            readString(c);
+        }
+        else if(parserState.state == State.EXPECTING_COMMA_OR_CLOSING_SYMBOL)
+        {
+        	stateStack.pop(); 		//popping the expecting_comma_or_closing_symbol state
+        	return readCommaClosingSymbol(c);
+        }
+        else if(parserState.state == State.EXPECTING_COLON)
+        {
+            readColon(c);
+        }
+		return null;
+    }
+    
+    private void readValue(char c) throws Exception
+    {
+    	if(c == '"')
+            parserState = new StateObject(State.READING_VALUE_STRING,new StringBuilder());
+        else if(Character.isDigit(c))
+            parserState = new StateObject(State.READING_DIGIT,c - '0');
+        else if(c == 't' || c == 'f' || c == 'n')
+        {
+            keyword = new StringBuilder();
+            keyword.append(c);
+            parserState = new StateObject(State.READING_KEYWORD,keyword);
+        }
+        else
+        	throw new Exception("Missing a value field");
+        
+    	stateStack.push(parserState);
+    }
+    
+    private Object readDigit(char c) throws Exception
+    {
+    	  if(c == ',' || c == '}' || c == ']')
+          {
+    		  try{
+    		  return readCommaClosingSymbol(c);
+    		  }
+    		  catch(Exception e){
+    			  throw new Exception(e.getMessage() +  " Expecting a list of digits");
+    		  }
+          }
+    	  else if(Character.isDigit(c))
+          {
+    		  parserState = stateStack.pop();
+              int digit = (Integer)parserState.data;
+              digit = digit * 10 + (c - '0');
+              parserState.data = digit;
+              stateStack.push(parserState);
+          }
+          else
+              throw new Exception("Expecting a digit");
+    	  return null;
+    }
+    
+    private void readKeyword(char c)throws Exception
+    {
+    	parserState = stateStack.pop();
+        keyword = (StringBuilder)parserState.data;
+        keyword.append(c);
+        if(keyword.length() == 4)
+        {
+            if(keyword.toString().equals("true") || keyword.toString().equals("null"))
+            {
+            	stateStack.push(new StateObject(State.READ_KEYWORD,keyword));
+            	stateStack.push(new StateObject(State.EXPECTING_COMMA_OR_CLOSING_SYMBOL));
+            	return;
+            }
+        }
+        else if(keyword.length() == 5)
+        {
+            if(keyword.toString().equals("false"))
+            {
+            	stateStack.push(new StateObject(State.READ_KEYWORD,keyword));
+            	stateStack.push(new StateObject(State.EXPECTING_COMMA_OR_CLOSING_SYMBOL));
+            	return;
+            }
+            else
+            	throw new Exception("Invalid keyword");	
+        }
+        parserState.data = keyword;
+        stateStack.push(parserState);
+    }
+    
+    private void readDictionary(char c) throws Exception
+    {
+    	if(c == '"')
+        {
+            parserState = new StateObject(State.READING_KEY_STRING,new StringBuilder());
+            stateStack.push(parserState);
+        }
+        else
+            throw new Exception("Invalid start of dictionary key");
+    }
+    
+    private void readString(char c)
+    {
+    	if(c == '"')
+        {
+            if(parserState.state == State.READING_KEY_STRING)
+                stateStack.push(new StateObject(State.EXPECTING_COLON));
+            else if(parserState.state == State.READING_VALUE_STRING)
+            	stateStack.push(new StateObject(State.EXPECTING_COMMA_OR_CLOSING_SYMBOL));
+        }
+        else
+        {
+            parserState = stateStack.pop();
+            StringBuilder key = (StringBuilder)parserState.data;
+            key.append(c);
+            parserState.data = key;
+            stateStack.push(parserState);
+        }
+    }
+    
+	private Object readCommaClosingSymbol(char c) throws Exception
+    {
+    	if(c != ',' && c != '}' && c!= ']')
+    		throw new Exception("Invalid json: expecting a comma or a closing } or ]");
+        parserState = stateStack.pop();
+        Object val = null;
+        if(parserState.data instanceof StringBuilder)
+        	val = parserState.data.toString();
+        else
+        	val = parserState.data;
+        StateObject prevState = stateStack.pop();
+        Object dataStructure = prevState.data;
+        State tempState = null, currDataStrucState = prevState.state;
+        if(dataStructure instanceof List)
+        {
+        	((List<Object>)dataStructure).add(val);
+        	tempState = State.READING_LIST;
+        }   
+        else if(prevState.state == State.READING_KEY_STRING && dataStructure instanceof StringBuilder)
+        {
+            StateObject dictionaryState = stateStack.pop();
+            if(dictionaryState.state == State.READING_DCITIONARY && dictionaryState.data instanceof HashMap)
+            {
+            	currDataStrucState = dictionaryState.state;
+                String key = dataStructure.toString();
+                dataStructure = dictionaryState.data;
+                ((HashMap<String, Object>)dataStructure).put(key, val);
+                tempState = State.READING_DCITIONARY;
+            }
+            else
+                throw new Exception("Expecting a HashMap");
+        }
+        if(c == ',')
+        {
+        	stateStack.push(new StateObject(tempState,dataStructure));
+        	if(tempState == State.READING_LIST)
+        		stateStack.push(new StateObject(State.EXPECTING_VALUE));
+        }
+        else if(c == ']' || c == '}')
+        {
+        	if(c == ']' && currDataStrucState == State.READING_DCITIONARY)
+        		throw new Exception("Mismatched braces");
+        	if(c == '}' && currDataStrucState == State.READING_LIST)
+        		throw new Exception("Mismatched brackets");
+        	if(stateStack.peek().state == State.START)
+        		return dataStructure;
+        	else{
+        		if(currDataStrucState == State.READING_DCITIONARY)
+        			stateStack.push(new StateObject(State.READ_DICTIONARY,dataStructure));
+        		else if(currDataStrucState == State.READING_LIST)
+        			stateStack.push(new StateObject(State.READ_LIST,dataStructure));
+        		stateStack.push(new StateObject(State.EXPECTING_COMMA_OR_CLOSING_SYMBOL));
+        	}
+        }
+        else
+            throw new Exception("Expecting a List or HashMap");
+        return null;
+    }
+	
+	private void readColon(char c)throws Exception
+	{
+		if(c == ':')
+        {
+        	stateStack.pop(); 		//popping the expecting_colon state
+            parserState = new StateObject(State.EXPECTING_VALUE);
+            stateStack.push(parserState);
+        }
+        else
+            throw new Exception("Expecting a colon after the key in the map");
+	}
+}
